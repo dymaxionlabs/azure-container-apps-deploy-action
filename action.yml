@@ -1,0 +1,221 @@
+name: Deploy to Azure Container Apps
+description: "Update an Azure Container App with a new image and environment variables. Authentication and image building should be handled separately."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  # Required inputs
+  container_app_name:
+    description: "Name of the Azure Container App or Container App Job"
+    required: true
+  resource_group:
+    description: "Azure Resource Group containing the Container App"
+    required: true
+  image:
+    description: "Full container image name with tag (e.g., myregistry.azurecr.io/myapp:v1.0.0)"
+    required: true
+
+  # Optional inputs
+  container_name:
+    description: "Name of the container within the Container App (defaults to app name)"
+    required: false
+    default: ""
+  resource_type:
+    description: "Type of resource: 'app' for Container App or 'job' for Container App Job"
+    required: false
+    default: "app"
+  env_vars:
+    description: "Environment variables in KEY=value format (one per line)"
+    required: false
+    default: ""
+  secrets:
+    description: "Secrets in KEY=value format (one per line). Will be set as environment variables."
+    required: false
+    default: ""
+  remove_all_env_vars:
+    description: "Remove all existing environment variables before setting new ones"
+    required: false
+    default: "false"
+  cpu:
+    description: "CPU cores (e.g., '0.5', '1.0', '2.0')"
+    required: false
+    default: ""
+  memory:
+    description: "Memory in Gi (e.g., '1.0Gi', '2.0Gi')"
+    required: false
+    default: ""
+  min_replicas:
+    description: "Minimum number of replicas"
+    required: false
+    default: ""
+  max_replicas:
+    description: "Maximum number of replicas"
+    required: false
+    default: ""
+
+outputs:
+  fqdn:
+    description: "Fully qualified domain name of the Container App"
+    value: ${{ steps.deploy.outputs.fqdn }}
+  url:
+    description: "Full URL of the Container App (https://fqdn)"
+    value: ${{ steps.deploy.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare environment variables
+      shell: bash
+      id: prepare-env
+      run: |
+        ENV_VARS=""
+
+        # Process environment variables
+        if [ -n "${{ inputs.env_vars }}" ]; then
+          echo "Processing environment variables..."
+          echo '${{ inputs.env_vars }}' > /tmp/env_vars.txt
+          
+          while IFS='=' read -r key value || [ -n "$key" ]; do
+            # Skip empty lines
+            if [ -z "$key" ]; then
+              continue
+            fi
+            
+            # Trim whitespace
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            
+            if [ -n "$key" ]; then
+              if [ -n "$ENV_VARS" ]; then
+                ENV_VARS="$ENV_VARS $key=$value"
+              else
+                ENV_VARS="$key=$value"
+              fi
+              echo "  ✓ $key"
+            fi
+          done < /tmp/env_vars.txt
+        fi
+
+        # Process secrets (same format as env vars)
+        if [ -n "${{ inputs.secrets }}" ]; then
+          echo "Processing secrets..."
+          echo '${{ inputs.secrets }}' > /tmp/secrets.txt
+          
+          while IFS='=' read -r key value || [ -n "$key" ]; do
+            if [ -z "$key" ]; then
+              continue
+            fi
+            
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            
+            if [ -n "$key" ]; then
+              if [ -n "$ENV_VARS" ]; then
+                ENV_VARS="$ENV_VARS $key=$value"
+              else
+                ENV_VARS="$key=$value"
+              fi
+              echo "  ✓ $key (secret)"
+            fi
+          done < /tmp/secrets.txt
+        fi
+
+        # Determine the final env args
+        ENV_ARGS=""
+        if [ "${{ inputs.remove_all_env_vars }}" = "true" ]; then
+          if [ -n "$ENV_VARS" ]; then
+            ENV_ARGS="--replace-env-vars $ENV_VARS"
+          else
+            ENV_ARGS="--replace-env-vars"
+          fi
+        else
+          if [ -n "$ENV_VARS" ]; then
+            ENV_ARGS="--set-env-vars $ENV_VARS"
+          fi
+        fi
+
+        echo "env-args=$ENV_ARGS" >> $GITHUB_OUTPUT
+
+    - name: Deploy to Azure Container App
+      shell: bash
+      id: deploy
+      run: |
+        CONTAINER_NAME="${{ inputs.container_name }}"
+        if [ -z "$CONTAINER_NAME" ]; then
+          CONTAINER_NAME="${{ inputs.container_app_name }}"
+        fi
+
+        echo "Deploying to Azure Container App..."
+        echo "  Resource Group: ${{ inputs.resource_group }}"
+        echo "  Container App: ${{ inputs.container_app_name }}"
+        echo "  Container Name: $CONTAINER_NAME"
+        echo "  Image: ${{ inputs.image }}"
+        echo "  Resource Type: ${{ inputs.resource_type }}"
+
+        # Build the update command
+        CMD="az containerapp update"
+        CMD="$CMD --name ${{ inputs.container_app_name }}"
+        CMD="$CMD --resource-group ${{ inputs.resource_group }}"
+        CMD="$CMD --image ${{ inputs.image }}"
+        CMD="$CMD --container-name $CONTAINER_NAME"
+
+        # Add optional parameters
+        if [ -n "${{ inputs.cpu }}" ]; then
+          CMD="$CMD --cpu ${{ inputs.cpu }}"
+        fi
+
+        if [ -n "${{ inputs.memory }}" ]; then
+          CMD="$CMD --memory ${{ inputs.memory }}"
+        fi
+
+        if [ -n "${{ inputs.min_replicas }}" ]; then
+          CMD="$CMD --min-replicas ${{ inputs.min_replicas }}"
+        fi
+
+        if [ -n "${{ inputs.max_replicas }}" ]; then
+          CMD="$CMD --max-replicas ${{ inputs.max_replicas }}"
+        fi
+
+        # Add environment variables
+        if [ -n "${{ steps.prepare-env.outputs.env-args }}" ]; then
+          CMD="$CMD ${{ steps.prepare-env.outputs.env-args }}"
+        fi
+
+        # Execute the command
+        echo "Executing: $CMD"
+        OUTPUT=$(eval $CMD)
+
+        # Extract FQDN if available (only for apps, not jobs)
+        if [ "${{ inputs.resource_type }}" = "app" ]; then
+          FQDN=$(echo "$OUTPUT" | jq -r '.properties.configuration.ingress.fqdn // empty')
+          if [ -n "$FQDN" ]; then
+            echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+            echo "url=https://$FQDN" >> $GITHUB_OUTPUT
+            echo "  ✓ Deployed successfully"
+            echo "  🌐 URL: https://$FQDN"
+          else
+            echo "  ✓ Deployed successfully (no ingress configured)"
+          fi
+        else
+          echo "  ✓ Container App Job updated successfully"
+        fi
+
+    - name: Add deployment summary
+      shell: bash
+      run: |
+        echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| **Resource Type** | ${{ inputs.resource_type }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Container App** | \`${{ inputs.container_app_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Resource Group** | \`${{ inputs.resource_group }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Image** | \`${{ inputs.image }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Container Name** | \`${{ inputs.container_name || inputs.container_app_name }}\` |" >> $GITHUB_STEP_SUMMARY
+
+        if [ -n "${{ steps.deploy.outputs.url }}" ]; then
+          echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
