@@ -330,10 +330,3 @@ Verify:
 ### Image Push Failed
 
 - Verify ACR name is correct
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
