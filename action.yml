@@ -33,6 +33,14 @@ inputs:
     description: "Secrets in KEY=value format (one per line). Will be set as environment variables."
     required: false
     default: ""
+  keyvault_secrets:
+    description: "Azure Key Vault secret references in KEY=VAULT_URL/secrets/SECRET_NAME format (one per line). Requires managed identity with Key Vault access."
+    required: false
+    default: ""
+  managed_identity:
+    description: "Managed identity resource ID to use for Key Vault access (required if using keyvault_secrets). Use 'system' for system-assigned identity."
+    required: false
+    default: ""
   remove_all_env_vars:
     description: "Remove all existing environment variables before setting new ones"
     required: false
@@ -75,17 +83,17 @@ runs:
         if [ -n "${{ inputs.env_vars }}" ]; then
           echo "Processing environment variables..."
           echo '${{ inputs.env_vars }}' > /tmp/env_vars.txt
-          
+
           while IFS='=' read -r key value || [ -n "$key" ]; do
             # Skip empty lines
             if [ -z "$key" ]; then
               continue
             fi
-            
+
             # Trim whitespace
             key=$(echo "$key" | xargs)
             value=$(echo "$value" | xargs)
-            
+
             if [ -n "$key" ]; then
               if [ -n "$ENV_VARS" ]; then
                 ENV_VARS="$ENV_VARS $key=$value"
@@ -101,15 +109,15 @@ runs:
         if [ -n "${{ inputs.secrets }}" ]; then
           echo "Processing secrets..."
           echo '${{ inputs.secrets }}' > /tmp/secrets.txt
-          
+
           while IFS='=' read -r key value || [ -n "$key" ]; do
             if [ -z "$key" ]; then
               continue
             fi
-            
+
             key=$(echo "$key" | xargs)
             value=$(echo "$value" | xargs)
-            
+
             if [ -n "$key" ]; then
               if [ -n "$ENV_VARS" ]; then
                 ENV_VARS="$ENV_VARS $key=$value"
@@ -119,6 +127,46 @@ runs:
               echo "  ✓ $key (secret)"
             fi
           done < /tmp/secrets.txt
+        fi
+
+        # Process Key Vault secrets
+        KEYVAULT_SECRETS=""
+        if [ -n "${{ inputs.keyvault_secrets }}" ]; then
+          echo "Processing Key Vault secrets..."
+
+          if [ -z "${{ inputs.managed_identity }}" ]; then
+            echo "❌ Error: managed_identity is required when using keyvault_secrets"
+            exit 1
+          fi
+
+          echo '${{ inputs.keyvault_secrets }}' > /tmp/keyvault_secrets.txt
+
+          # Determine identity reference
+          IDENTITY_REF=""
+          if [ "${{ inputs.managed_identity }}" = "system" ]; then
+            IDENTITY_REF="system"
+          else
+            IDENTITY_REF="${{ inputs.managed_identity }}"
+          fi
+
+          while IFS='=' read -r key vault_secret_url || [ -n "$key" ]; do
+            if [ -z "$key" ]; then
+              continue
+            fi
+
+            key=$(echo "$key" | xargs)
+            vault_secret_url=$(echo "$vault_secret_url" | xargs)
+
+            if [ -n "$key" ] && [ -n "$vault_secret_url" ]; then
+              # Create Key Vault reference
+              if [ -n "$KEYVAULT_SECRETS" ]; then
+                KEYVAULT_SECRETS="$KEYVAULT_SECRETS $key=keyvaultref:$vault_secret_url,identityref:$IDENTITY_REF"
+              else
+                KEYVAULT_SECRETS="$key=keyvaultref:$vault_secret_url,identityref:$IDENTITY_REF"
+              fi
+              echo "  ✓ $key (Key Vault)"
+            fi
+          done < /tmp/keyvault_secrets.txt
         fi
 
         # Determine the final env args
@@ -136,6 +184,7 @@ runs:
         fi
 
         echo "env-args=$ENV_ARGS" >> $GITHUB_OUTPUT
+        echo "keyvault-secrets=$KEYVAULT_SECRETS" >> $GITHUB_OUTPUT
 
     - name: Deploy to Azure Container App
       shell: bash
@@ -179,6 +228,13 @@ runs:
 
         # Add environment variables
         if [ -n "${{ steps.prepare-env.outputs.env-args }}" ]; then
+          CMD="$CMD ${{ steps.prepare-env.outputs.env-args }}"
+        fi
+
+        # Add Key Vault secrets
+        if [ -n "${{ steps.prepare-env.outputs.keyvault-secrets }}" ]; then
+          CMD="$CMD --secrets ${{ steps.prepare-env.outputs.keyvault-secrets }}"
+        fi
           CMD="$CMD ${{ steps.prepare-env.outputs.env-args }}"
         fi
 

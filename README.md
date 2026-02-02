@@ -17,25 +17,25 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      
+
     steps:
       # 1. Checkout code
       - uses: actions/checkout@v4
-      
+
       # 2. Authenticate with Azure
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      
+
       # 3. Build and push image (your choice of method)
       - name: Build and push
         run: |
           az acr login --name myregistry
           docker build -t myregistry.azurecr.io/myapp:${{ github.sha }} .
           docker push myregistry.azurecr.io/myapp:${{ github.sha }}
-      
+
       # 4. Deploy to Container App
       - uses: dymaxionlabs/container-apps-deploy-action@v1
         with:
@@ -52,20 +52,22 @@ jobs:
 
 ## Inputs
 
-| Input                 | Description                                                   | Required | Default          |
-| --------------------- | ------------------------------------------------------------- | -------- | ---------------- |
-| `container_app_name`  | Name of the Azure Container App or Job                        | ✅ Yes    | -                |
-| `resource_group`      | Azure Resource Group name                                     | ✅ Yes    | -                |
-| `image`               | Full image name with tag (e.g., `registry.azurecr.io/app:v1`) | ✅ Yes    | -                |
-| `container_name`      | Container name within the app                                 | ❌ No     | Same as app name |
-| `resource_type`       | Resource type: `app` or `job`                                 | ❌ No     | `app`            |
-| `env_vars`            | Environment variables (KEY=value, one per line)               | ❌ No     | -                |
-| `secrets`             | Secrets (KEY=value, one per line)                             | ❌ No     | -                |
-| `remove_all_env_vars` | Remove all existing env vars before setting new ones          | ❌ No     | `false`          |
-| `cpu`                 | CPU cores (e.g., `0.5`, `1.0`, `2.0`)                         | ❌ No     | -                |
-| `memory`              | Memory in Gi (e.g., `1.0Gi`, `2.0Gi`)                         | ❌ No     | -                |
-| `min_replicas`        | Minimum number of replicas                                    | ❌ No     | -                |
-| `max_replicas`        | Maximum number of replicas                                    | ❌ No     | -                |
+| Input                 | Description                                                                                                                                    | Required | Default          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------- |
+| `container_app_name`  | Name of the Azure Container App or Job                                                                                                         | ✅ Yes    | -                |
+| `resource_group`      | Azure Resource Group name                                                                                                                      | ✅ Yes    | -                |
+| `image`               | Full image name with tag (e.g., `registry.azurecr.io/app:v1`)                                                                                  | ✅ Yes    | -                |
+| `container_name`      | Container name within the app                                                                                                                  | ❌ No     | Same as app name |
+| `resource_type`       | Resource type: `app` or `job`                                                                                                                  | ❌ No     | `app`            |
+| `env_vars`            | Environment variables (KEY=value, one per line)                                                                                                | ❌ No     | -                |
+| `secrets`             | Secrets (KEY=value, one per line)                                                                                                              | ❌ No     | -                |
+| `keyvault_secrets`    | Azure Key Vault secrets (KEY=VAULT_URL/secrets/NAME, one per line)                                                                             | ❌ No     | -                |
+| `managed_identity`    | Managed identity for Key Vault (required with `keyvault_secrets`). Use `system` for system-assigned identity or resource ID for user-assigned. | ❌ No     | -                |
+| `remove_all_env_vars` | Remove all existing env vars before setting new ones                                                                                           | ❌ No     | `false`          |
+| `cpu`                 | CPU cores (e.g., `0.5`, `1.0`, `2.0`)                                                                                                          | ❌ No     | -                |
+| `memory`              | Memory in Gi (e.g., `1.0Gi`, `2.0Gi`)                                                                                                          | ❌ No     | -                |
+| `min_replicas`        | Minimum number of replicas                                                                                                                     | ❌ No     | -                |
+| `max_replicas`        | Maximum number of replicas                                                                                                                     | ❌ No     | -                |
 
 ## Outputs
 
@@ -91,21 +93,21 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      
+
       - uses: docker/setup-buildx-action@v3
-      
+
       - name: Login to ACR
         run: az acr login --name myregistry
-      
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -114,7 +116,7 @@ jobs:
           tags: myregistry.azurecr.io/myapp:${{ github.sha }}
           cache-from: type=registry,ref=myregistry.azurecr.io/myapp:cache
           cache-to: type=registry,ref=myregistry.azurecr.io/myapp:cache,mode=max
-      
+
       - uses: dymaxionlabs/container-apps-deploy-action@v1
         with:
           container_app_name: my-app
@@ -167,6 +169,54 @@ If your image is already built (e.g., in a separate job or external CI):
       TIMEOUT=3600
 ```
 
+### Using Azure Key Vault Secrets
+
+Store sensitive values in Azure Key Vault and reference them in your Container App:
+
+```yaml
+- uses: dymaxionlabs/container-apps-deploy-action@v1
+  with:
+    container_app_name: my-app
+    resource_group: rg-production
+    image: myregistry.azurecr.io/myapp:${{ github.sha }}
+    managed_identity: system  # or use user-assigned identity resource ID
+    env_vars: |
+      APP_ENV=production
+      LOG_LEVEL=info
+    keyvault_secrets: |
+      DATABASE_URL=https://myvault.vault.azure.net/secrets/database-url
+      API_KEY=https://myvault.vault.azure.net/secrets/api-key
+      STRIPE_SECRET=https://myvault.vault.azure.net/secrets/stripe-secret
+```
+
+**Prerequisites for Key Vault:**
+1. Container App must have a managed identity (system or user-assigned)
+2. Managed identity must have `Get` permission on Key Vault secrets
+3. Key Vault must allow access from the managed identity
+
+### Mixed Secret Sources
+
+You can combine GitHub Secrets and Azure Key Vault:
+
+```yaml
+- uses: dymaxionlabs/container-apps-deploy-action@v1
+  with:
+    container_app_name: my-app
+    resource_group: rg-production
+    image: myregistry.azurecr.io/myapp:${{ github.sha }}
+    managed_identity: system
+    env_vars: |
+      APP_ENV=production
+    # GitHub Secrets (passed at deployment time)
+    secrets: |
+      NEXTAUTH_SECRET=${{ secrets.NEXTAUTH_SECRET }}
+      SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+    # Key Vault Secrets (referenced at runtime)
+    keyvault_secrets: |
+      DATABASE_URL=https://myvault.vault.azure.net/secrets/database-url
+      REDIS_PASSWORD=https://myvault.vault.azure.net/secrets/redis-password
+```
+
 ### Replace All Environment Variables
 
 ```yaml
@@ -200,34 +250,94 @@ steps:
       client-id: ${{ vars.AZURE_CLIENT_ID }}
       tenant-id: ${{ vars.AZURE_TENANT_ID }}
       subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-  
+
   - uses: dymaxionlabs/container-apps-deploy-action@v1
     with:
       container_app_name: ${{ matrix.environment.app }}
       resource_group: ${{ matrix.environment.rg }}
       image: myregistry.azurecr.io/myapp:${{ github.sha }}
-```## How It Works
+```
 
-1. **Checkout**: Checks out your repository code
-2. **Azure Login**: Authenticates with Azure using OIDC
-3. **Docker Setup**: Configures Docker Buildx for advanced builds
-4. **ACR Login**: Authenticates with Azure Container Registry
-5. **Build & Push**: Builds the Docker image with caching and pushes to ACR
-6. **Prepare Variables**: Processes environment variables and secrets
-7. **Deploy**: Updates the Azure Container App with the new image
-8. **Summary**: Generates a deployment summary in GitHub Actions UI
+## Secret Management Options
 
-## Tagging Strategy
+This action supports three ways to handle sensitive configuration:
 
-Images are tagged with two tags:
+### 1. Environment Variables (`env_vars`)
+**Use for:** Non-sensitive configuration values
+```yaml
+env_vars: |
+  APP_ENV=production
+  LOG_LEVEL=info
+  API_ENDPOINT=https://api.example.com
+```
+- ✅ Simple and straightforward
+- ✅ Visible in Container App configuration
+- ❌ Not encrypted (don't use for secrets!)
 
-1. `<environment>-<commit-sha>`: Specific version tag (e.g., `production-abc123`)
-2. `<environment>`: Latest tag for the environment (e.g., `production`)
+### 2. GitHub Secrets (`secrets`)
+**Use for:** Secrets that change frequently or are environment-specific
+```yaml
+secrets: |
+  NEXTAUTH_SECRET=${{ secrets.NEXTAUTH_SECRET }}
+  DEPLOYMENT_TOKEN=${{ secrets.DEPLOY_TOKEN }}
+```
+- ✅ Stored securely in GitHub
+- ✅ Can be different per environment
+- ✅ Encrypted in Container App
+- ❌ Require redeployment to update
 
-This allows for:
-- Easy rollbacks to specific commits
-- Quick access to latest environment version
-- Clear deployment history
+### 3. Azure Key Vault (`keyvault_secrets`)
+**Use for:** Shared secrets across multiple apps, or secrets managed by security team
+```yaml
+managed_identity: system
+keyvault_secrets: |
+  DATABASE_URL=https://myvault.vault.azure.net/secrets/db-connection
+  API_KEY=https://myvault.vault.azure.net/secrets/api-key
+```
+- ✅ Centralized secret management
+- ✅ Can update in Key Vault without redeployment
+- ✅ Audit logs and access policies
+- ✅ Secret rotation support
+- ❌ Requires managed identity setup
+- ❌ Slightly more complex configuration
+
+### Choosing the Right Approach
+
+| Scenario                               | Recommended Approach |
+| -------------------------------------- | -------------------- |
+| API URLs, feature flags                | `env_vars`           |
+| Deployment-specific tokens             | `secrets` (GitHub)   |
+| Database passwords, shared across apps | `keyvault_secrets`   |
+| Development secrets                    | `secrets` (GitHub)   |
+| Production secrets requiring audit     | `keyvault_secrets`   |
+| Secrets that need rotation             | `keyvault_secrets`   |
+
+### Setting up Key Vault Access
+
+1. **Enable managed identity on Container App:**
+   ```bash
+   az containerapp identity assign \
+     --name my-app \
+     --resource-group rg-production \
+     --system-assigned
+   ```
+
+2. **Grant Key Vault access:**
+   ```bash
+   az keyvault set-policy \
+     --name myvault \
+     --object-id <identity-principal-id> \
+     --secret-permissions get list
+   ```
+
+3. **Use in deployment:**
+   ```yaml
+   managed_identity: system  # or user-assigned identity resource ID
+   keyvault_secrets: |
+     SECRET_NAME=https://myvault.vault.azure.net/secrets/secret-name
+   ```
+
+## Prerequisites
 
 ## Caching
 
@@ -311,7 +421,7 @@ Ensure `azure/login@v2` runs before this action and has correct credentials.
 
 Verify:
 - Container App name is correct
-- Resource group name is correct  
+- Resource group name is correct
 - You're authenticated to the right subscription
 
 ### Image Pull Failed
