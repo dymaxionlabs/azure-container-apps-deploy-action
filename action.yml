@@ -61,6 +61,22 @@ inputs:
     description: "Maximum number of replicas"
     required: false
     default: ""
+  command:
+    description: "Command to run for Container App Jobs (e.g., '/app/entrypoint.sh')"
+    required: false
+    default: ""
+  args:
+    description: "Arguments for the command (space-separated, e.g., 'python ./manage.py execute_jobrun')"
+    required: false
+    default: ""
+  replica_timeout:
+    description: "Timeout for job replicas in seconds (Container App Jobs only)"
+    required: false
+    default: ""
+  replica_retry_limit:
+    description: "Retry limit for failed job replicas (Container App Jobs only)"
+    required: false
+    default: ""
 
 outputs:
   fqdn:
@@ -202,28 +218,58 @@ runs:
         echo "  Image: ${{ inputs.image }}"
         echo "  Resource Type: ${{ inputs.resource_type }}"
 
-        # Build the update command
-        CMD="az containerapp update"
+        # Build the update command based on resource type
+        if [ "${{ inputs.resource_type }}" = "job" ]; then
+          CMD="az containerapp job update"
+        else
+          CMD="az containerapp update"
+        fi
+
         CMD="$CMD --name ${{ inputs.container_app_name }}"
         CMD="$CMD --resource-group ${{ inputs.resource_group }}"
         CMD="$CMD --image ${{ inputs.image }}"
-        CMD="$CMD --container-name $CONTAINER_NAME"
 
-        # Add optional parameters
-        if [ -n "${{ inputs.cpu }}" ]; then
-          CMD="$CMD --cpu ${{ inputs.cpu }}"
+        # Container name is only used for Container Apps, not Jobs
+        if [ "${{ inputs.resource_type }}" != "job" ]; then
+          CMD="$CMD --container-name $CONTAINER_NAME"
         fi
 
-        if [ -n "${{ inputs.memory }}" ]; then
-          CMD="$CMD --memory ${{ inputs.memory }}"
+        # Add optional parameters for Container Apps
+        if [ "${{ inputs.resource_type }}" != "job" ]; then
+          if [ -n "${{ inputs.cpu }}" ]; then
+            CMD="$CMD --cpu ${{ inputs.cpu }}"
+          fi
+
+          if [ -n "${{ inputs.memory }}" ]; then
+            CMD="$CMD --memory ${{ inputs.memory }}"
+          fi
+
+          if [ -n "${{ inputs.min_replicas }}" ]; then
+            CMD="$CMD --min-replicas ${{ inputs.min_replicas }}"
+          fi
+
+          if [ -n "${{ inputs.max_replicas }}" ]; then
+            CMD="$CMD --max-replicas ${{ inputs.max_replicas }}"
+          fi
         fi
 
-        if [ -n "${{ inputs.min_replicas }}" ]; then
-          CMD="$CMD --min-replicas ${{ inputs.min_replicas }}"
-        fi
+        # Add job-specific parameters for Container App Jobs
+        if [ "${{ inputs.resource_type }}" = "job" ]; then
+          if [ -n "${{ inputs.command }}" ]; then
+            CMD="$CMD --command \"${{ inputs.command }}\""
+          fi
 
-        if [ -n "${{ inputs.max_replicas }}" ]; then
-          CMD="$CMD --max-replicas ${{ inputs.max_replicas }}"
+          if [ -n "${{ inputs.args }}" ]; then
+            CMD="$CMD --args ${{ inputs.args }}"
+          fi
+
+          if [ -n "${{ inputs.replica_timeout }}" ]; then
+            CMD="$CMD --replica-timeout ${{ inputs.replica_timeout }}"
+          fi
+
+          if [ -n "${{ inputs.replica_retry_limit }}" ]; then
+            CMD="$CMD --replica-retry-limit ${{ inputs.replica_retry_limit }}"
+          fi
         fi
 
         # Add environment variables
