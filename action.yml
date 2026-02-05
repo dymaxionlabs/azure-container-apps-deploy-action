@@ -33,6 +33,10 @@ inputs:
     description: "Secrets in KEY=value format (one per line). Will be set as environment variables."
     required: false
     default: ""
+  secrets_json:
+    description: "Secrets as JSON object (e.g., using toJSON(secrets)). Will be set as environment variables."
+    required: false
+    default: ""
   keyvault_secrets:
     description: "Azure Key Vault secret references in KEY=VAULT_URL/secrets/SECRET_NAME format (one per line). Requires managed identity with Key Vault access."
     required: false
@@ -143,6 +147,29 @@ runs:
               echo "  ✓ $key (secret)"
             fi
           done < /tmp/secrets.txt
+        fi
+
+        # Process secrets from JSON (e.g., toJSON(secrets))
+        if [ -n "${{ inputs.secrets_json }}" ]; then
+          echo "Processing secrets from JSON..."
+          echo '${{ inputs.secrets_json }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /tmp/secrets_json.txt
+
+          while IFS='=' read -r key value || [ -n "$key" ]; do
+            if [ -z "$key" ]; then
+              continue
+            fi
+
+            key=$(echo "$key" | xargs)
+            
+            if [ -n "$key" ]; then
+              if [ -n "$ENV_VARS" ]; then
+                ENV_VARS="$ENV_VARS $key=$value"
+              else
+                ENV_VARS="$key=$value"
+              fi
+              echo "  ✓ $key (secret from JSON)"
+            fi
+          done < /tmp/secrets_json.txt
         fi
 
         # Process Key Vault secrets
