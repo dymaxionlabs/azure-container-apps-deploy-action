@@ -235,8 +235,6 @@ runs:
         if [ -n "${{ steps.prepare-env.outputs.keyvault-secrets }}" ]; then
           CMD="$CMD --secrets ${{ steps.prepare-env.outputs.keyvault-secrets }}"
         fi
-          CMD="$CMD ${{ steps.prepare-env.outputs.env-args }}"
-        fi
 
         # Execute the command
         echo "Executing: $CMD"
