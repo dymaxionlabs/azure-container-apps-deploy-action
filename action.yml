@@ -96,6 +96,8 @@ runs:
     - name: Prepare environment variables
       shell: bash
       id: prepare-env
+      env:
+        INPUT_SECRETS_JSON: ${{ inputs.secrets_json }}
       run: |
         ENV_VARS=""
 
@@ -115,10 +117,11 @@ runs:
             value=$(echo "$value" | xargs)
 
             if [ -n "$key" ]; then
+              quoted_value=$(printf '%q' "$value")
               if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$value"
+                ENV_VARS="$ENV_VARS $key=$quoted_value"
               else
-                ENV_VARS="$key=$value"
+                ENV_VARS="$key=$quoted_value"
               fi
               echo "  ✓ $key"
             fi
@@ -139,10 +142,11 @@ runs:
             value=$(echo "$value" | xargs)
 
             if [ -n "$key" ]; then
+              quoted_value=$(printf '%q' "$value")
               if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$value"
+                ENV_VARS="$ENV_VARS $key=$quoted_value"
               else
-                ENV_VARS="$key=$value"
+                ENV_VARS="$key=$quoted_value"
               fi
               echo "  ✓ $key (secret)"
             fi
@@ -150,9 +154,9 @@ runs:
         fi
 
         # Process secrets from JSON (e.g., toJSON(secrets))
-        if [ -n "${{ inputs.secrets_json }}" ]; then
+        if [ -n "$INPUT_SECRETS_JSON" ]; then
           echo "Processing secrets from JSON..."
-          echo '${{ inputs.secrets_json }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /tmp/secrets_json.txt
+          printf '%s\n' "$INPUT_SECRETS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /tmp/secrets_json.txt
 
           while IFS='=' read -r key value || [ -n "$key" ]; do
             if [ -z "$key" ]; then
@@ -162,10 +166,11 @@ runs:
             key=$(echo "$key" | xargs)
             
             if [ -n "$key" ]; then
+              quoted_value=$(printf '%q' "$value")
               if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$value"
+                ENV_VARS="$ENV_VARS $key=$quoted_value"
               else
-                ENV_VARS="$key=$value"
+                ENV_VARS="$key=$quoted_value"
               fi
               echo "  ✓ $key (secret from JSON)"
             fi
