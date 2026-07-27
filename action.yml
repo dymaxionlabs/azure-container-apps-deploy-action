@@ -97,14 +97,18 @@ runs:
       shell: bash
       id: prepare-env
       env:
+        INPUT_ENV_VARS: ${{ inputs.env_vars }}
+        INPUT_SECRETS: ${{ inputs.secrets }}
         INPUT_SECRETS_JSON: ${{ inputs.secrets_json }}
+        INPUT_KEYVAULT_SECRETS: ${{ inputs.keyvault_secrets }}
+        INPUT_MANAGED_IDENTITY: ${{ inputs.managed_identity }}
       run: |
         ENV_VARS=""
 
         # Process environment variables
-        if [ -n "${{ inputs.env_vars }}" ]; then
+        if [ -n "$INPUT_ENV_VARS" ]; then
           echo "Processing environment variables..."
-          echo '${{ inputs.env_vars }}' > /tmp/env_vars.txt
+          printf '%s\n' "$INPUT_ENV_VARS" > /tmp/env_vars.txt
 
           while IFS='=' read -r key value || [ -n "$key" ]; do
             # Skip empty lines
@@ -112,9 +116,9 @@ runs:
               continue
             fi
 
-            # Trim whitespace
+            # Keys are identifiers, but values must remain byte-for-byte intact.
             key=$(echo "$key" | xargs)
-            value=$(echo "$value" | xargs)
+            value="${value%$'\r'}"
 
             if [ -n "$key" ]; then
               quoted_value=$(printf '%q' "$value")
@@ -129,9 +133,9 @@ runs:
         fi
 
         # Process secrets (same format as env vars)
-        if [ -n "${{ inputs.secrets }}" ]; then
+        if [ -n "$INPUT_SECRETS" ]; then
           echo "Processing secrets..."
-          echo '${{ inputs.secrets }}' > /tmp/secrets.txt
+          printf '%s\n' "$INPUT_SECRETS" > /tmp/secrets.txt
 
           while IFS='=' read -r key value || [ -n "$key" ]; do
             if [ -z "$key" ]; then
@@ -139,7 +143,7 @@ runs:
             fi
 
             key=$(echo "$key" | xargs)
-            value=$(echo "$value" | xargs)
+            value="${value%$'\r'}"
 
             if [ -n "$key" ]; then
               quoted_value=$(printf '%q' "$value")
@@ -179,22 +183,22 @@ runs:
 
         # Process Key Vault secrets
         KEYVAULT_SECRETS=""
-        if [ -n "${{ inputs.keyvault_secrets }}" ]; then
+        if [ -n "$INPUT_KEYVAULT_SECRETS" ]; then
           echo "Processing Key Vault secrets..."
 
-          if [ -z "${{ inputs.managed_identity }}" ]; then
+          if [ -z "$INPUT_MANAGED_IDENTITY" ]; then
             echo "❌ Error: managed_identity is required when using keyvault_secrets"
             exit 1
           fi
 
-          echo '${{ inputs.keyvault_secrets }}' > /tmp/keyvault_secrets.txt
+          printf '%s\n' "$INPUT_KEYVAULT_SECRETS" > /tmp/keyvault_secrets.txt
 
           # Determine identity reference
           IDENTITY_REF=""
-          if [ "${{ inputs.managed_identity }}" = "system" ]; then
+          if [ "$INPUT_MANAGED_IDENTITY" = "system" ]; then
             IDENTITY_REF="system"
           else
-            IDENTITY_REF="${{ inputs.managed_identity }}"
+            IDENTITY_REF="$INPUT_MANAGED_IDENTITY"
           fi
 
           while IFS='=' read -r key vault_secret_url || [ -n "$key" ]; do
@@ -203,7 +207,7 @@ runs:
             fi
 
             key=$(echo "$key" | xargs)
-            vault_secret_url=$(echo "$vault_secret_url" | xargs)
+            vault_secret_url="${vault_secret_url%$'\r'}"
 
             if [ -n "$key" ] && [ -n "$vault_secret_url" ]; then
               # Create Key Vault reference

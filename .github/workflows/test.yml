@@ -1,0 +1,59 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  preserve-environment-values:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fake Azure CLI
+        env:
+          AZ_ARGS_FILE: ${{ runner.temp }}/az-args
+        run: |
+          mkdir -p "${RUNNER_TEMP}/fake-bin"
+          cat > "${RUNNER_TEMP}/fake-bin/az" <<'EOF'
+          #!/usr/bin/env bash
+          printf '%s\0' "$@" > "$AZ_ARGS_FILE"
+          printf '%s\n' '{"properties":{"configuration":{"ingress":{"fqdn":"test.example"}}}}'
+          EOF
+          chmod +x "${RUNNER_TEMP}/fake-bin/az"
+          echo "${RUNNER_TEMP}/fake-bin" >> "$GITHUB_PATH"
+
+      - name: Run action
+        uses: ./
+        env:
+          AZ_ARGS_FILE: ${{ runner.temp }}/az-args
+        with:
+          container_app_name: test-app
+          resource_group: test-group
+          image: test.azurecr.io/app:test
+          env_vars: |
+            JSON_VALUE={"dev.":"https://example.test/auth/callback"}
+            SPACED_VALUE=openid profile email
+            EQUALS_VALUE=left=right
+            QUOTED_VALUE=hello "world"
+
+      - name: Assert exact Azure CLI arguments
+        env:
+          AZ_ARGS_FILE: ${{ runner.temp }}/az-args
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          args = Path(os.environ["AZ_ARGS_FILE"]).read_bytes().split(b"\0")
+          args = [item.decode() for item in args if item]
+          env_index = args.index("--set-env-vars")
+          env_values = dict(item.split("=", 1) for item in args[env_index + 1 :])
+
+          assert env_values["JSON_VALUE"] == '{"dev.":"https://example.test/auth/callback"}'
+          assert env_values["SPACED_VALUE"] == "openid profile email"
+          assert env_values["EQUALS_VALUE"] == "left=right"
+          assert env_values["QUOTED_VALUE"] == 'hello "world"'
+          PY
