@@ -93,239 +93,151 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Prepare environment variables
-      shell: bash
-      id: prepare-env
-      env:
-        INPUT_SECRETS_JSON: ${{ inputs.secrets_json }}
-      run: |
-        ENV_VARS=""
-
-        # Process environment variables
-        if [ -n "${{ inputs.env_vars }}" ]; then
-          echo "Processing environment variables..."
-          echo '${{ inputs.env_vars }}' > /tmp/env_vars.txt
-
-          while IFS='=' read -r key value || [ -n "$key" ]; do
-            # Skip empty lines
-            if [ -z "$key" ]; then
-              continue
-            fi
-
-            # Trim whitespace
-            key=$(echo "$key" | xargs)
-            value=$(echo "$value" | xargs)
-
-            if [ -n "$key" ]; then
-              quoted_value=$(printf '%q' "$value")
-              if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$quoted_value"
-              else
-                ENV_VARS="$key=$quoted_value"
-              fi
-              echo "  ✓ $key"
-            fi
-          done < /tmp/env_vars.txt
-        fi
-
-        # Process secrets (same format as env vars)
-        if [ -n "${{ inputs.secrets }}" ]; then
-          echo "Processing secrets..."
-          echo '${{ inputs.secrets }}' > /tmp/secrets.txt
-
-          while IFS='=' read -r key value || [ -n "$key" ]; do
-            if [ -z "$key" ]; then
-              continue
-            fi
-
-            key=$(echo "$key" | xargs)
-            value=$(echo "$value" | xargs)
-
-            if [ -n "$key" ]; then
-              quoted_value=$(printf '%q' "$value")
-              if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$quoted_value"
-              else
-                ENV_VARS="$key=$quoted_value"
-              fi
-              echo "  ✓ $key (secret)"
-            fi
-          done < /tmp/secrets.txt
-        fi
-
-        # Process secrets from JSON (e.g., toJSON(secrets))
-        if [ -n "$INPUT_SECRETS_JSON" ]; then
-          echo "Processing secrets from JSON..."
-          printf '%s\n' "$INPUT_SECRETS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /tmp/secrets_json.txt
-
-          while IFS='=' read -r key value || [ -n "$key" ]; do
-            if [ -z "$key" ]; then
-              continue
-            fi
-
-            key=$(echo "$key" | xargs)
-            
-            if [ -n "$key" ]; then
-              quoted_value=$(printf '%q' "$value")
-              if [ -n "$ENV_VARS" ]; then
-                ENV_VARS="$ENV_VARS $key=$quoted_value"
-              else
-                ENV_VARS="$key=$quoted_value"
-              fi
-              echo "  ✓ $key (secret from JSON)"
-            fi
-          done < /tmp/secrets_json.txt
-        fi
-
-        # Process Key Vault secrets
-        KEYVAULT_SECRETS=""
-        if [ -n "${{ inputs.keyvault_secrets }}" ]; then
-          echo "Processing Key Vault secrets..."
-
-          if [ -z "${{ inputs.managed_identity }}" ]; then
-            echo "❌ Error: managed_identity is required when using keyvault_secrets"
-            exit 1
-          fi
-
-          echo '${{ inputs.keyvault_secrets }}' > /tmp/keyvault_secrets.txt
-
-          # Determine identity reference
-          IDENTITY_REF=""
-          if [ "${{ inputs.managed_identity }}" = "system" ]; then
-            IDENTITY_REF="system"
-          else
-            IDENTITY_REF="${{ inputs.managed_identity }}"
-          fi
-
-          while IFS='=' read -r key vault_secret_url || [ -n "$key" ]; do
-            if [ -z "$key" ]; then
-              continue
-            fi
-
-            key=$(echo "$key" | xargs)
-            vault_secret_url=$(echo "$vault_secret_url" | xargs)
-
-            if [ -n "$key" ] && [ -n "$vault_secret_url" ]; then
-              # Create Key Vault reference
-              if [ -n "$KEYVAULT_SECRETS" ]; then
-                KEYVAULT_SECRETS="$KEYVAULT_SECRETS $key=keyvaultref:$vault_secret_url,identityref:$IDENTITY_REF"
-              else
-                KEYVAULT_SECRETS="$key=keyvaultref:$vault_secret_url,identityref:$IDENTITY_REF"
-              fi
-              echo "  ✓ $key (Key Vault)"
-            fi
-          done < /tmp/keyvault_secrets.txt
-        fi
-
-        # Determine the final env args
-        ENV_ARGS=""
-        if [ "${{ inputs.remove_all_env_vars }}" = "true" ]; then
-          if [ -n "$ENV_VARS" ]; then
-            ENV_ARGS="--replace-env-vars $ENV_VARS"
-          else
-            ENV_ARGS="--replace-env-vars"
-          fi
-        else
-          if [ -n "$ENV_VARS" ]; then
-            ENV_ARGS="--set-env-vars $ENV_VARS"
-          fi
-        fi
-
-        echo "env-args=$ENV_ARGS" >> $GITHUB_OUTPUT
-        echo "keyvault-secrets=$KEYVAULT_SECRETS" >> $GITHUB_OUTPUT
-
     - name: Deploy to Azure Container App
       shell: bash
       id: deploy
+      env:
+        INPUT_CONTAINER_APP_NAME: ${{ inputs.container_app_name }}
+        INPUT_RESOURCE_GROUP: ${{ inputs.resource_group }}
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_CONTAINER_NAME: ${{ inputs.container_name }}
+        INPUT_RESOURCE_TYPE: ${{ inputs.resource_type }}
+        INPUT_ENV_VARS: ${{ inputs.env_vars }}
+        INPUT_SECRETS: ${{ inputs.secrets }}
+        INPUT_SECRETS_JSON: ${{ inputs.secrets_json }}
+        INPUT_KEYVAULT_SECRETS: ${{ inputs.keyvault_secrets }}
+        INPUT_MANAGED_IDENTITY: ${{ inputs.managed_identity }}
+        INPUT_REMOVE_ALL_ENV_VARS: ${{ inputs.remove_all_env_vars }}
+        INPUT_CPU: ${{ inputs.cpu }}
+        INPUT_MEMORY: ${{ inputs.memory }}
+        INPUT_MIN_REPLICAS: ${{ inputs.min_replicas }}
+        INPUT_MAX_REPLICAS: ${{ inputs.max_replicas }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_REPLICA_TIMEOUT: ${{ inputs.replica_timeout }}
+        INPUT_REPLICA_RETRY_LIMIT: ${{ inputs.replica_retry_limit }}
       run: |
-        CONTAINER_NAME="${{ inputs.container_name }}"
-        if [ -z "$CONTAINER_NAME" ]; then
-          CONTAINER_NAME="${{ inputs.container_app_name }}"
+        set -euo pipefail
+
+        # Keep values as single argv elements. In particular, do not construct a
+        # shell command string: secrets may contain shell metacharacters and must
+        # never be reparsed by eval.
+        env_var_args=()
+        keyvault_secret_args=()
+
+        trim_key() {
+          local value="$1"
+          value="${value#${value%%[![:space:]]*}}"
+          value="${value%${value##*[![:space:]]}}"
+          printf '%s' "$value"
+        }
+
+        append_env_lines() {
+          local content="$1"
+          local key value
+          while IFS='=' read -r key value || [[ -n "$key" ]]; do
+            [[ -z "$key" ]] && continue
+            key="$(trim_key "$key")"
+            value="${value%$'\r'}"
+            [[ -n "$key" ]] && env_var_args+=("$key=$value")
+          done < <(printf '%s\n' "$content")
+        }
+
+        append_secret_lines() {
+          local content="$1"
+          local key value
+          while IFS='=' read -r key value || [[ -n "$key" ]]; do
+            [[ -z "$key" ]] && continue
+            key="$(trim_key "$key")"
+            value="${value%$'\r'}"
+            [[ -n "$key" ]] && env_var_args+=("$key=$value")
+          done < <(printf '%s\n' "$content")
+        }
+
+        append_env_lines "$INPUT_ENV_VARS"
+        append_secret_lines "$INPUT_SECRETS"
+
+        if [[ -n "$INPUT_SECRETS_JSON" ]]; then
+          if ! jq -e 'type == "object"' >/dev/null <<<"$INPUT_SECRETS_JSON"; then
+            echo "::error::secrets_json must be a JSON object."
+            exit 1
+          fi
+
+          while IFS= read -r encoded_entry; do
+            entry="$(printf '%s' "$encoded_entry" | base64 --decode)"
+            key="$(jq -r '.key' <<<"$entry")"
+            value="$(jq -r '.value // ""' <<<"$entry")"
+            [[ -n "$key" ]] && env_var_args+=("$key=$value")
+          done < <(jq -r 'to_entries[] | @base64' <<<"$INPUT_SECRETS_JSON")
         fi
 
-        echo "Deploying to Azure Container App..."
-        echo "  Resource Group: ${{ inputs.resource_group }}"
-        echo "  Container App: ${{ inputs.container_app_name }}"
-        echo "  Container Name: $CONTAINER_NAME"
-        echo "  Image: ${{ inputs.image }}"
-        echo "  Resource Type: ${{ inputs.resource_type }}"
+        if [[ -n "$INPUT_KEYVAULT_SECRETS" ]]; then
+          if [[ -z "$INPUT_MANAGED_IDENTITY" ]]; then
+            echo "::error::managed_identity is required when using keyvault_secrets."
+            exit 1
+          fi
 
-        # Build the update command based on resource type
-        if [ "${{ inputs.resource_type }}" = "job" ]; then
-          CMD="az containerapp job update"
+          while IFS='=' read -r key vault_secret_url || [[ -n "$key" ]]; do
+            [[ -z "$key" ]] && continue
+            key="$(trim_key "$key")"
+            vault_secret_url="${vault_secret_url%$'\r'}"
+            if [[ -n "$key" && -n "$vault_secret_url" ]]; then
+              keyvault_secret_args+=("$key=keyvaultref:$vault_secret_url,identityref:$INPUT_MANAGED_IDENTITY")
+            fi
+          done < <(printf '%s\n' "$INPUT_KEYVAULT_SECRETS")
+        fi
+
+        if [[ "$INPUT_RESOURCE_TYPE" == "job" ]]; then
+          command=(az containerapp job update)
         else
-          CMD="az containerapp update"
+          command=(az containerapp update)
+        fi
+        command+=(
+          --name "$INPUT_CONTAINER_APP_NAME"
+          --resource-group "$INPUT_RESOURCE_GROUP"
+          --image "$INPUT_IMAGE"
+        )
+
+        if [[ "$INPUT_RESOURCE_TYPE" != "job" ]]; then
+          container_name="$INPUT_CONTAINER_NAME"
+          [[ -z "$container_name" ]] && container_name="$INPUT_CONTAINER_APP_NAME"
+          command+=(--container-name "$container_name")
+
+          [[ -n "$INPUT_CPU" ]] && command+=(--cpu "$INPUT_CPU")
+          [[ -n "$INPUT_MEMORY" ]] && command+=(--memory "$INPUT_MEMORY")
+          [[ -n "$INPUT_MIN_REPLICAS" ]] && command+=(--min-replicas "$INPUT_MIN_REPLICAS")
+          [[ -n "$INPUT_MAX_REPLICAS" ]] && command+=(--max-replicas "$INPUT_MAX_REPLICAS")
+        else
+          [[ -n "$INPUT_COMMAND" ]] && command+=(--command "$INPUT_COMMAND")
+          if [[ -n "$INPUT_ARGS" ]]; then
+            read -r -a job_args <<<"$INPUT_ARGS"
+            command+=(--args "${job_args[@]}")
+          fi
+          [[ -n "$INPUT_REPLICA_TIMEOUT" ]] && command+=(--replica-timeout "$INPUT_REPLICA_TIMEOUT")
+          [[ -n "$INPUT_REPLICA_RETRY_LIMIT" ]] && command+=(--replica-retry-limit "$INPUT_REPLICA_RETRY_LIMIT")
         fi
 
-        CMD="$CMD --name ${{ inputs.container_app_name }}"
-        CMD="$CMD --resource-group ${{ inputs.resource_group }}"
-        CMD="$CMD --image ${{ inputs.image }}"
-
-        # Container name is only used for Container Apps, not Jobs
-        if [ "${{ inputs.resource_type }}" != "job" ]; then
-          CMD="$CMD --container-name $CONTAINER_NAME"
+        if [[ "$INPUT_REMOVE_ALL_ENV_VARS" == "true" ]]; then
+          command+=(--replace-env-vars)
+          ((${#env_var_args[@]} > 0)) && command+=("${env_var_args[@]}")
+        elif ((${#env_var_args[@]} > 0)); then
+          command+=(--set-env-vars "${env_var_args[@]}")
         fi
 
-        # Add optional parameters for Container Apps
-        if [ "${{ inputs.resource_type }}" != "job" ]; then
-          if [ -n "${{ inputs.cpu }}" ]; then
-            CMD="$CMD --cpu ${{ inputs.cpu }}"
-          fi
-
-          if [ -n "${{ inputs.memory }}" ]; then
-            CMD="$CMD --memory ${{ inputs.memory }}"
-          fi
-
-          if [ -n "${{ inputs.min_replicas }}" ]; then
-            CMD="$CMD --min-replicas ${{ inputs.min_replicas }}"
-          fi
-
-          if [ -n "${{ inputs.max_replicas }}" ]; then
-            CMD="$CMD --max-replicas ${{ inputs.max_replicas }}"
-          fi
+        if ((${#keyvault_secret_args[@]} > 0)); then
+          command+=(--secrets "${keyvault_secret_args[@]}")
         fi
 
-        # Add job-specific parameters for Container App Jobs
-        if [ "${{ inputs.resource_type }}" = "job" ]; then
-          if [ -n "${{ inputs.command }}" ]; then
-            CMD="$CMD --command \"${{ inputs.command }}\""
-          fi
+        echo "Deploying $INPUT_RESOURCE_TYPE '$INPUT_CONTAINER_APP_NAME' without logging secret values."
+        output="$("${command[@]}")"
 
-          if [ -n "${{ inputs.args }}" ]; then
-            CMD="$CMD --args ${{ inputs.args }}"
-          fi
-
-          if [ -n "${{ inputs.replica_timeout }}" ]; then
-            CMD="$CMD --replica-timeout ${{ inputs.replica_timeout }}"
-          fi
-
-          if [ -n "${{ inputs.replica_retry_limit }}" ]; then
-            CMD="$CMD --replica-retry-limit ${{ inputs.replica_retry_limit }}"
-          fi
-        fi
-
-        # Add environment variables
-        if [ -n "${{ steps.prepare-env.outputs.env-args }}" ]; then
-          CMD="$CMD ${{ steps.prepare-env.outputs.env-args }}"
-        fi
-
-        # Add Key Vault secrets
-        if [ -n "${{ steps.prepare-env.outputs.keyvault-secrets }}" ]; then
-          CMD="$CMD --secrets ${{ steps.prepare-env.outputs.keyvault-secrets }}"
-        fi
-
-        # Execute the command
-        echo "Executing: $CMD"
-        OUTPUT=$(eval $CMD)
-
-        # Extract FQDN if available (only for apps, not jobs)
-        if [ "${{ inputs.resource_type }}" = "app" ]; then
-          FQDN=$(echo "$OUTPUT" | jq -r '.properties.configuration.ingress.fqdn // empty')
-          if [ -n "$FQDN" ]; then
-            echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
-            echo "url=https://$FQDN" >> $GITHUB_OUTPUT
+        if [[ "$INPUT_RESOURCE_TYPE" == "app" ]]; then
+          fqdn="$(jq -r '.properties.configuration.ingress.fqdn // empty' <<<"$output")"
+          if [[ -n "$fqdn" ]]; then
+            echo "fqdn=$fqdn" >>"$GITHUB_OUTPUT"
+            echo "url=https://$fqdn" >>"$GITHUB_OUTPUT"
             echo "  ✓ Deployed successfully"
-            echo "  🌐 URL: https://$FQDN"
+            echo "  🌐 URL: https://$fqdn"
           else
             echo "  ✓ Deployed successfully (no ingress configured)"
           fi
@@ -336,18 +248,18 @@ runs:
     - name: Add deployment summary
       shell: bash
       run: |
-        echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-        echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| **Resource Type** | ${{ inputs.resource_type }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Container App** | \`${{ inputs.container_app_name }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Resource Group** | \`${{ inputs.resource_group }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Image** | \`${{ inputs.image }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Container Name** | \`${{ inputs.container_name || inputs.container_app_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "## 🚀 Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+        echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Resource Type** | ${{ inputs.resource_type }} |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Container App** | \`${{ inputs.container_app_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Resource Group** | \`${{ inputs.resource_group }}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Image** | \`${{ inputs.image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Container Name** | \`${{ inputs.container_name || inputs.container_app_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
         if [ -n "${{ steps.deploy.outputs.url }}" ]; then
-          echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> "$GITHUB_STEP_SUMMARY"
         fi
 
-        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "" >> "$GITHUB_STEP_SUMMARY"
