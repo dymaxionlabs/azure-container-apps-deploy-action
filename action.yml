@@ -134,28 +134,23 @@ runs:
 
         append_env_lines() {
           local content="$1"
-          local key value
-          while IFS='=' read -r key value || [[ -n "$key" ]]; do
-            [[ -z "$key" ]] && continue
+          local line key value
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" ]] && continue
+            line="${line%$'\r'}"
+            key="${line%%=*}"
+            if [[ "$line" == *=* ]]; then
+              value="${line#*=}"
+            else
+              value=""
+            fi
             key="$(trim_key "$key")"
-            value="${value%$'\r'}"
-            [[ -n "$key" ]] && env_var_args+=("$key=$value")
-          done < <(printf '%s\n' "$content")
-        }
-
-        append_secret_lines() {
-          local content="$1"
-          local key value
-          while IFS='=' read -r key value || [[ -n "$key" ]]; do
-            [[ -z "$key" ]] && continue
-            key="$(trim_key "$key")"
-            value="${value%$'\r'}"
             [[ -n "$key" ]] && env_var_args+=("$key=$value")
           done < <(printf '%s\n' "$content")
         }
 
         append_env_lines "$INPUT_ENV_VARS"
-        append_secret_lines "$INPUT_SECRETS"
+        append_env_lines "$INPUT_SECRETS"
 
         if [[ -n "$INPUT_SECRETS_JSON" ]]; then
           if ! jq -e 'type == "object"' >/dev/null <<<"$INPUT_SECRETS_JSON"; then
@@ -177,10 +172,16 @@ runs:
             exit 1
           fi
 
-          while IFS='=' read -r key vault_secret_url || [[ -n "$key" ]]; do
-            [[ -z "$key" ]] && continue
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" ]] && continue
+            line="${line%$'\r'}"
+            key="${line%%=*}"
+            if [[ "$line" == *=* ]]; then
+              vault_secret_url="${line#*=}"
+            else
+              vault_secret_url=""
+            fi
             key="$(trim_key "$key")"
-            vault_secret_url="${vault_secret_url%$'\r'}"
             if [[ -n "$key" && -n "$vault_secret_url" ]]; then
               keyvault_secret_args+=("$key=keyvaultref:$vault_secret_url,identityref:$INPUT_MANAGED_IDENTITY")
             fi
