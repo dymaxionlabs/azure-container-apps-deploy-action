@@ -61,7 +61,7 @@ jobs:
 | `resource_type`       | Resource type: `app` or `job`                                                                                                                  | ❌ No     | `app`            |
 | `env_vars`            | Environment variables (KEY=value, one per line)                                                                                                | ❌ No     | -                |
 | `secrets`             | Secrets (KEY=value, one per line)                                                                                                              | ❌ No     | -                |
-| `keyvault_secrets`    | Azure Key Vault secrets (KEY=VAULT_URL/secrets/NAME, one per line)                                                                             | ❌ No     | -                |
+| `keyvault_secrets`    | Azure Key Vault secrets (KEY=VAULT_URL/secrets/NAME, one per line; KEY is at most 20 characters)                                                | ❌ No     | -                |
 | `managed_identity`    | Managed identity for Key Vault (required with `keyvault_secrets`). Use `system` for system-assigned identity or resource ID for user-assigned. | ❌ No     | -                |
 | `remove_all_env_vars` | Remove all existing env vars before setting new ones                                                                                           | ❌ No     | `false`          |
 | `cpu`                 | CPU cores (e.g., `0.5`, `1.0`, `2.0`)                                                                                                          | ❌ No     | -                |
@@ -380,9 +380,10 @@ Both are passed to the container the same way. Use `secrets` input for values fr
 ## How It Works
 
 1. **Validates inputs** and prepares environment variables
-2. **Runs `az containerapp update`** with your image and configuration
-3. **Extracts FQDN** (for apps with ingress) and sets outputs
-4. **Creates deployment summary** in GitHub Actions UI
+2. **Sets Key Vault references** with the resource's `secret set` command
+3. **Runs the resource update command** with your image and configuration
+4. **Extracts FQDN** (for apps with ingress) and sets outputs
+5. **Creates deployment summary** in GitHub Actions UI
 
 ## Permissions Required
 

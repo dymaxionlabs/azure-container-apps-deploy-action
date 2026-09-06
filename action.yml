@@ -193,6 +193,24 @@ runs:
         else
           command=(az containerapp update)
         fi
+
+        if ((${#keyvault_secret_args[@]} > 0)); then
+          if [[ "$INPUT_RESOURCE_TYPE" == "job" ]]; then
+            secret_command=(az containerapp job secret set)
+          else
+            secret_command=(az containerapp secret set)
+          fi
+          secret_command+=(
+            --name "$INPUT_CONTAINER_APP_NAME"
+            --resource-group "$INPUT_RESOURCE_GROUP"
+            --secrets "${keyvault_secret_args[@]}"
+            --output none
+          )
+
+          echo "Setting Key Vault secret references for $INPUT_RESOURCE_TYPE '$INPUT_CONTAINER_APP_NAME' without logging secret values."
+          "${secret_command[@]}"
+        fi
+
         command+=(
           --name "$INPUT_CONTAINER_APP_NAME"
           --resource-group "$INPUT_RESOURCE_GROUP"
@@ -223,10 +241,6 @@ runs:
           ((${#env_var_args[@]} > 0)) && command+=("${env_var_args[@]}")
         elif ((${#env_var_args[@]} > 0)); then
           command+=(--set-env-vars "${env_var_args[@]}")
-        fi
-
-        if ((${#keyvault_secret_args[@]} > 0)); then
-          command+=(--secrets "${keyvault_secret_args[@]}")
         fi
 
         echo "Deploying $INPUT_RESOURCE_TYPE '$INPUT_CONTAINER_APP_NAME' without logging secret values."
