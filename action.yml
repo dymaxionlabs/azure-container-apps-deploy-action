@@ -365,7 +365,7 @@ runs:
                 health_state="$(jq -r '.properties.healthState // empty' <<<"$revision_output")"
                 revision_image="$(jq -r --arg container_name "$container_name" '([.properties.template.containers[]? | select(.name == $container_name) | .image] + [.properties.template.containers[]? | .image])[0] // empty' <<<"$revision_output")"
 
-                if [[ "$provisioning_state" == "Failed" || "$running_state" == "Failed" || "$running_state" == "Degraded" || "$health_state" == "Unhealthy" ]]; then
+                if [[ "$provisioning_state" == *Failed || "$running_state" == *Failed || "$running_state" == "Degraded" || "$health_state" == "Unhealthy" ]]; then
                   echo "::error::Revision '$revision_name' failed validation (provisioning=$provisioning_state, running=$running_state, health=$health_state)."
                   exit 1
                 fi
