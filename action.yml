@@ -81,6 +81,22 @@ inputs:
     description: "Retry limit for failed job replicas (Container App Jobs only)"
     required: false
     default: ""
+  validation:
+    description: "Post-deployment validation: 'none', 'revision', or 'revision-and-http'"
+    required: false
+    default: "none"
+  validation_timeout:
+    description: "Maximum validation time in seconds"
+    required: false
+    default: "300"
+  health_check_url:
+    description: "HTTP(S) URL to check when validation is 'revision-and-http'"
+    required: false
+    default: ""
+  health_check_status_codes:
+    description: "Expected HTTP status code or range, for example '200' or '200-399'"
+    required: false
+    default: "200-399"
 
 outputs:
   fqdn:
@@ -89,6 +105,12 @@ outputs:
   url:
     description: "Full URL of the Container App (https://fqdn)"
     value: ${{ steps.deploy.outputs.url }}
+  revision_name:
+    description: "Name of the deployed revision"
+    value: ${{ steps.deploy.outputs.revision_name }}
+  validation:
+    description: "Result of post-deployment validation"
+    value: ${{ steps.deploy.outputs.validation }}
 
 runs:
   using: composite
@@ -116,6 +138,10 @@ runs:
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_REPLICA_TIMEOUT: ${{ inputs.replica_timeout }}
         INPUT_REPLICA_RETRY_LIMIT: ${{ inputs.replica_retry_limit }}
+        INPUT_VALIDATION: ${{ inputs.validation }}
+        INPUT_VALIDATION_TIMEOUT: ${{ inputs.validation_timeout }}
+        INPUT_HEALTH_CHECK_URL: ${{ inputs.health_check_url }}
+        INPUT_HEALTH_CHECK_STATUS_CODES: ${{ inputs.health_check_status_codes }}
       run: |
         set -euo pipefail
 
@@ -188,6 +214,50 @@ runs:
           done < <(printf '%s\n' "$INPUT_KEYVAULT_SECRETS")
         fi
 
+        case "$INPUT_VALIDATION" in
+          none|revision|revision-and-http)
+            ;;
+          *)
+            echo "::error::validation must be one of: none, revision, revision-and-http."
+            exit 1
+            ;;
+        esac
+
+        if ! [[ "$INPUT_VALIDATION_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::validation_timeout must be a positive number of seconds."
+          exit 1
+        fi
+
+        if [[ "$INPUT_RESOURCE_TYPE" == "job" && "$INPUT_VALIDATION" != "none" ]]; then
+          echo "::error::revision validation is supported only for Container Apps, not Container App Jobs."
+          exit 1
+        fi
+
+        if [[ "$INPUT_VALIDATION" == "revision-and-http" ]]; then
+          if [[ ! "$INPUT_HEALTH_CHECK_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::health_check_url must be an absolute HTTP(S) URL when validation is revision-and-http."
+            exit 1
+          fi
+
+          if [[ ! "$INPUT_HEALTH_CHECK_STATUS_CODES" =~ ^[0-9]{3}(-[0-9]{3})?$ ]]; then
+            echo "::error::health_check_status_codes must be a three-digit code or range such as 200-399."
+            exit 1
+          fi
+
+          status_min="${INPUT_HEALTH_CHECK_STATUS_CODES%%-*}"
+          status_max="${INPUT_HEALTH_CHECK_STATUS_CODES##*-}"
+          [[ "$status_min" == "$INPUT_HEALTH_CHECK_STATUS_CODES" ]] && status_max="$status_min"
+          if ((10#$status_min > 10#$status_max)); then
+            echo "::error::health_check_status_codes must specify an ascending range."
+            exit 1
+          fi
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "::error::curl is required for HTTP health validation."
+            exit 1
+          fi
+        fi
+
         if [[ "$INPUT_RESOURCE_TYPE" == "job" ]]; then
           command=(az containerapp job update)
         else
@@ -248,6 +318,15 @@ runs:
 
         if [[ "$INPUT_RESOURCE_TYPE" == "app" ]]; then
           fqdn="$(jq -r '.properties.configuration.ingress.fqdn // empty' <<<"$output")"
+          revision_name="$(jq -r '.properties.latestRevisionName // empty' <<<"$output")"
+          if [[ -z "$revision_name" ]]; then
+            revision_name="$(az containerapp show \
+              --name "$INPUT_CONTAINER_APP_NAME" \
+              --resource-group "$INPUT_RESOURCE_GROUP" \
+              --query 'properties.latestRevisionName' \
+              --output tsv)"
+          fi
+
           if [[ -n "$fqdn" ]]; then
             echo "fqdn=$fqdn" >>"$GITHUB_OUTPUT"
             echo "url=https://$fqdn" >>"$GITHUB_OUTPUT"
@@ -256,8 +335,92 @@ runs:
           else
             echo "  ✓ Deployed successfully (no ingress configured)"
           fi
+
+          if [[ -n "$revision_name" ]]; then
+            echo "revision_name=$revision_name" >>"$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$INPUT_VALIDATION" != "none" ]]; then
+            if [[ -z "$revision_name" ]]; then
+              echo "::error::Azure did not return a latest revision name for the deployed app."
+              exit 1
+            fi
+
+            deadline=$((SECONDS + INPUT_VALIDATION_TIMEOUT))
+            expected_status_min="${INPUT_HEALTH_CHECK_STATUS_CODES%%-*}"
+            expected_status_max="${INPUT_HEALTH_CHECK_STATUS_CODES##*-}"
+            [[ "$expected_status_min" == "$INPUT_HEALTH_CHECK_STATUS_CODES" ]] && expected_status_max="$expected_status_min"
+            validation_complete=false
+
+            echo "Validating revision '$revision_name'."
+            while ((SECONDS < deadline)); do
+              revision_output=""
+              if revision_output="$(az containerapp revision show \
+                --name "$INPUT_CONTAINER_APP_NAME" \
+                --resource-group "$INPUT_RESOURCE_GROUP" \
+                --revision "$revision_name" \
+                --output json 2>/dev/null)"; then
+                provisioning_state="$(jq -r '.properties.provisioningState // empty' <<<"$revision_output")"
+                running_state="$(jq -r '.properties.runningState // empty' <<<"$revision_output")"
+                health_state="$(jq -r '.properties.healthState // empty' <<<"$revision_output")"
+                revision_image="$(jq -r --arg container_name "$container_name" '([.properties.template.containers[]? | select(.name == $container_name) | .image] + [.properties.template.containers[]? | .image])[0] // empty' <<<"$revision_output")"
+
+                if [[ "$provisioning_state" == "Failed" || "$running_state" == "Failed" || "$running_state" == "Degraded" || "$health_state" == "Unhealthy" ]]; then
+                  echo "::error::Revision '$revision_name' failed validation (provisioning=$provisioning_state, running=$running_state, health=$health_state)."
+                  exit 1
+                fi
+
+                if [[ "$revision_image" != "$INPUT_IMAGE" ]]; then
+                  echo "::error::Revision '$revision_name' is using an unexpected image."
+                  echo "::error::Expected image: $INPUT_IMAGE"
+                  echo "::error::Actual image: $revision_image"
+                  exit 1
+                fi
+
+                latest_ready_revision="$(az containerapp show \
+                  --name "$INPUT_CONTAINER_APP_NAME" \
+                  --resource-group "$INPUT_RESOURCE_GROUP" \
+                  --query 'properties.latestReadyRevisionName' \
+                  --output tsv 2>/dev/null || true)"
+
+                if [[ "$provisioning_state" == "Provisioned" && "$running_state" == "Running" && "$health_state" == "Healthy" && "$latest_ready_revision" == "$revision_name" ]]; then
+                  validation_complete=true
+                  break
+                fi
+              fi
+              sleep 5
+            done
+
+            if [[ "$validation_complete" != "true" ]]; then
+              echo "::error::Revision '$revision_name' did not become ready within ${INPUT_VALIDATION_TIMEOUT}s."
+              exit 1
+            fi
+            echo "  ✓ Revision is provisioned, running, healthy, and ready"
+
+            if [[ "$INPUT_VALIDATION" == "revision-and-http" ]]; then
+              deadline=$((SECONDS + INPUT_VALIDATION_TIMEOUT))
+              http_check_complete=false
+              echo "Checking application health endpoint without logging its response body."
+              while ((SECONDS < deadline)); do
+                http_status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --max-time 15 "$INPUT_HEALTH_CHECK_URL" 2>/dev/null || true)"
+                if [[ "$http_status" =~ ^[0-9]{3}$ ]] && ((10#$http_status >= 10#$expected_status_min && 10#$http_status <= 10#$expected_status_max)); then
+                  http_check_complete=true
+                  break
+                fi
+                sleep 5
+              done
+
+              if [[ "$http_check_complete" != "true" ]]; then
+                echo "::error::Health check did not return an expected status (${INPUT_HEALTH_CHECK_STATUS_CODES}) within ${INPUT_VALIDATION_TIMEOUT}s."
+                exit 1
+              fi
+              echo "  ✓ Application health endpoint returned HTTP $http_status"
+            fi
+          fi
+          echo "validation=$INPUT_VALIDATION" >>"$GITHUB_OUTPUT"
         else
           echo "  ✓ Container App Job updated successfully"
+          echo "validation=none" >>"$GITHUB_OUTPUT"
         fi
 
     - name: Add deployment summary
