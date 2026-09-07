@@ -68,13 +68,19 @@ jobs:
 | `memory`              | Memory in Gi (e.g., `1.0Gi`, `2.0Gi`)                                                                                                          | ❌ No     | -                |
 | `min_replicas`        | Minimum number of replicas                                                                                                                     | ❌ No     | -                |
 | `max_replicas`        | Maximum number of replicas                                                                                                                     | ❌ No     | -                |
+| `validation`          | Post-deployment validation: `none`, `revision`, or `revision-and-http`                                                                        | ❌ No     | `none`           |
+| `validation_timeout`  | Maximum time, in seconds, to wait for each validation stage                                                                              | ❌ No     | `300`            |
+| `health_check_url`    | Absolute HTTP(S) URL to check when using `revision-and-http`                                                                                     | ❌ No     | -                |
+| `health_check_status_codes` | Expected HTTP status code or range, such as `200` or `200-399`                                                                           | ❌ No     | `200-399`        |
 
 ## Outputs
 
 | Output | Description                                      |
 | ------ | ------------------------------------------------ |
-| `fqdn` | Fully qualified domain name of the Container App |
-| `url`  | Full HTTPS URL of the Container App              |
+| `fqdn`          | Fully qualified domain name of the Container App |
+| `url`           | Full HTTPS URL of the Container App              |
+| `revision_name` | Name of the deployed revision                    |
+| `validation`    | Validation mode that completed successfully     |
 
 ## Examples
 
@@ -133,7 +139,40 @@ jobs:
           secrets: |
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             NEXTAUTH_SECRET=${{ secrets.NEXTAUTH_SECRET }}
+          validation: revision-and-http
+          validation_timeout: "300"
+          health_check_url: https://app.example.com/health/ready
+          health_check_status_codes: "200-399"
 ```
+
+### Post-deployment validation
+
+Validation is opt-in and applies to Container Apps, not Container App Jobs. The
+`revision` mode polls the exact revision created by the update and succeeds only
+when Azure reports it as provisioned, running, healthy, and the latest ready
+revision. It also verifies that the revision is using the requested image. It
+does not require a non-zero replica count, so it works with apps configured to
+scale to zero.
+
+Use `revision-and-http` to add an application-level smoke check:
+
+```yaml
+- uses: dymaxionlabs/container-apps-deploy-action@v1
+  with:
+    container_app_name: my-app
+    resource_group: rg-production
+    image: myregistry.azurecr.io/myapp:${{ github.sha }}
+    validation: revision-and-http
+    validation_timeout: "300"
+    health_check_url: https://app.example.com/health/ready
+    health_check_status_codes: "200-399"
+```
+
+The URL must be reachable from the GitHub Actions runner. For private or
+internal ingress, use a self-hosted runner with network access. Configure the
+application's Azure Container Apps readiness probe separately; this action
+waits for the resulting revision health and does not change probe configuration.
+The action does not log the health-check response body.
 
 ### Deploy Pre-built Image
 
