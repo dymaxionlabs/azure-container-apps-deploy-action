@@ -435,6 +435,8 @@ runs:
         echo "| **Resource Group** | \`${{ inputs.resource_group }}\` |" >> "$GITHUB_STEP_SUMMARY"
         echo "| **Image** | \`${{ inputs.image }}\` |" >> "$GITHUB_STEP_SUMMARY"
         echo "| **Container Name** | \`${{ inputs.container_name || inputs.container_app_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Revision** | \`${{ steps.deploy.outputs.revision_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| **Validation** | \`${{ steps.deploy.outputs.validation }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
         if [ -n "${{ steps.deploy.outputs.url }}" ]; then
           echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> "$GITHUB_STEP_SUMMARY"
