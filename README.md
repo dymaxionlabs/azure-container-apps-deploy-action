@@ -72,6 +72,8 @@ jobs:
 | `validation_timeout`  | Maximum time, in seconds, to wait for each validation stage                                                                              | ❌ No     | `300`            |
 | `health_check_url`    | Absolute HTTP(S) URL to check when using `revision-and-http`                                                                                     | ❌ No     | -                |
 | `health_check_status_codes` | Expected HTTP status code or range, such as `200` or `200-399`                                                                           | ❌ No     | `200-399`        |
+| `run_job`             | Jobs only: after updating the job, start one execution and fail unless it succeeds                                                         | ❌ No     | `false`          |
+| `job_timeout`         | Maximum time, in seconds, to wait for the `run_job` execution; it is stopped when the time runs out                                         | ❌ No     | `1800`           |
 
 ## Outputs
 
@@ -81,6 +83,7 @@ jobs:
 | `url`           | Full HTTPS URL of the Container App              |
 | `revision_name` | Name of the deployed revision                    |
 | `validation`    | Validation mode that completed successfully     |
+| `job_execution_name` | Name of the execution started by `run_job`  |
 
 ## Examples
 
@@ -207,6 +210,40 @@ If your image is already built (e.g., in a separate job or external CI):
       SCHEDULE=0 0 * * *
       TIMEOUT=3600
 ```
+
+### Run a Job and Wait for It
+
+Set `run_job: true` to start one execution after updating the job and fail the step
+unless it succeeds. Use it for work that must finish before the next deployment step,
+such as database migrations before the application is updated. If the execution does
+not finish within `job_timeout` seconds, it is stopped and the step fails.
+
+```yaml
+- name: Run database migrations
+  uses: dymaxionlabs/azure-container-apps-deploy-action@v3
+  with:
+    container_app_name: job-myapp-migrate-dev
+    resource_group: rg-myapp-dev
+    resource_type: job
+    image: myregistry.azurecr.io/myapp:${{ github.sha }}
+    # The job's command and arguments (manage.py migrate --noinput) are set in Terraform.
+    run_job: true
+    job_timeout: 1800
+
+- name: Deploy application
+  uses: dymaxionlabs/azure-container-apps-deploy-action@v3
+  with:
+    container_app_name: ca-myapp-dev
+    resource_group: rg-myapp-dev
+    image: myregistry.azurecr.io/myapp:${{ github.sha }}
+```
+
+The deploying identity needs permission to start the job and read its executions, which
+the Contributor role on the job's resource group includes.
+
+Azure CLI reads any `args` value that starts with `-` (for example `--noinput`) as one of
+its own options, so such arguments cannot be passed through `args`. Leave `command` and
+`args` empty to keep the ones the job already has, for example set in Terraform.
 
 ### Using Azure Key Vault Secrets
 
