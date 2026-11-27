@@ -97,6 +97,14 @@ inputs:
     description: "Expected HTTP status code or range, for example '200' or '200-399'"
     required: false
     default: "200-399"
+  run_job:
+    description: "Container App Jobs only: after updating the job, start one execution and fail unless it succeeds (for example, database migrations)"
+    required: false
+    default: "false"
+  job_timeout:
+    description: "Maximum time, in seconds, to wait for the execution started by run_job; it is stopped when the time runs out"
+    required: false
+    default: "1800"
 
 outputs:
   fqdn:
@@ -111,6 +119,9 @@ outputs:
   validation:
     description: "Result of post-deployment validation"
     value: ${{ steps.deploy.outputs.validation }}
+  job_execution_name:
+    description: "Name of the job execution started by run_job"
+    value: ${{ steps.deploy.outputs.job_execution_name }}
 
 runs:
   using: composite
@@ -142,6 +153,8 @@ runs:
         INPUT_VALIDATION_TIMEOUT: ${{ inputs.validation_timeout }}
         INPUT_HEALTH_CHECK_URL: ${{ inputs.health_check_url }}
         INPUT_HEALTH_CHECK_STATUS_CODES: ${{ inputs.health_check_status_codes }}
+        INPUT_RUN_JOB: ${{ inputs.run_job }}
+        INPUT_JOB_TIMEOUT: ${{ inputs.job_timeout }}
       run: |
         set -euo pipefail
 
@@ -225,6 +238,25 @@ runs:
 
         if ! [[ "$INPUT_VALIDATION_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
           echo "::error::validation_timeout must be a positive number of seconds."
+          exit 1
+        fi
+
+        case "$INPUT_RUN_JOB" in
+          true|false)
+            ;;
+          *)
+            echo "::error::run_job must be true or false."
+            exit 1
+            ;;
+        esac
+
+        if [[ "$INPUT_RUN_JOB" == "true" && "$INPUT_RESOURCE_TYPE" != "job" ]]; then
+          echo "::error::run_job is supported only for Container App Jobs."
+          exit 1
+        fi
+
+        if ! [[ "$INPUT_JOB_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::job_timeout must be a positive number of seconds."
           exit 1
         fi
 
@@ -421,6 +453,51 @@ runs:
         else
           echo "  ✓ Container App Job updated successfully"
           echo "validation=none" >>"$GITHUB_OUTPUT"
+
+          if [[ "$INPUT_RUN_JOB" == "true" ]]; then
+            execution_name="$(az containerapp job start \
+              --name "$INPUT_CONTAINER_APP_NAME" \
+              --resource-group "$INPUT_RESOURCE_GROUP" \
+              --query name \
+              --output tsv)"
+            if [[ -z "$execution_name" ]]; then
+              echo "::error::Azure did not return an execution name for job '$INPUT_CONTAINER_APP_NAME'."
+              exit 1
+            fi
+            echo "job_execution_name=$execution_name" >>"$GITHUB_OUTPUT"
+            echo "Started execution '$execution_name'; waiting up to ${INPUT_JOB_TIMEOUT}s for it to finish."
+
+            deadline=$((SECONDS + INPUT_JOB_TIMEOUT))
+            execution_status=""
+            while true; do
+              execution_status="$(az containerapp job execution show \
+                --name "$INPUT_CONTAINER_APP_NAME" \
+                --resource-group "$INPUT_RESOURCE_GROUP" \
+                --job-execution-name "$execution_name" \
+                --query properties.status \
+                --output tsv 2>/dev/null || true)"
+              case "$execution_status" in
+                Succeeded)
+                  echo "  ✓ Job execution '$execution_name' succeeded"
+                  break
+                  ;;
+                Failed|Stopped|Degraded)
+                  echo "::error::Job execution '$execution_name' ended as $execution_status. Its logs are in the job's execution history."
+                  exit 1
+                  ;;
+              esac
+              if ((SECONDS >= deadline)); then
+                echo "::error::Job execution '$execution_name' did not finish within ${INPUT_JOB_TIMEOUT}s (last status: ${execution_status:-unknown}); stopping it."
+                az containerapp job stop \
+                  --name "$INPUT_CONTAINER_APP_NAME" \
+                  --resource-group "$INPUT_RESOURCE_GROUP" \
+                  --job-execution-name "$execution_name" \
+                  --output none || true
+                exit 1
+              fi
+              sleep 10
+            done
+          fi
         fi
 
     - name: Add deployment summary
@@ -437,6 +514,10 @@ runs:
         echo "| **Container Name** | \`${{ inputs.container_name || inputs.container_app_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
         echo "| **Revision** | \`${{ steps.deploy.outputs.revision_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
         echo "| **Validation** | \`${{ steps.deploy.outputs.validation }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+        if [ -n "${{ steps.deploy.outputs.job_execution_name }}" ]; then
+          echo "| **Job Execution** | \`${{ steps.deploy.outputs.job_execution_name }}\` (succeeded) |" >> "$GITHUB_STEP_SUMMARY"
+        fi
 
         if [ -n "${{ steps.deploy.outputs.url }}" ]; then
           echo "| **URL** | ${{ steps.deploy.outputs.url }} |" >> "$GITHUB_STEP_SUMMARY"
